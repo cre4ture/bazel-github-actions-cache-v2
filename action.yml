@@ -1,0 +1,57 @@
+name: Bazel GitHub Actions Cache v2
+description: Run a loopback-only Bazel HTTP remote cache backed by GitHub Actions cache v2
+author: cre4ture
+branding:
+  icon: database
+  color: green
+inputs:
+  write:
+    description: "auto writes only on default-branch pushes; true enables trusted non-fork workflows; false is read-only"
+    required: false
+    default: auto
+  fail-on-cache-error:
+    description: "Fail Bazel requests when GitHub cache is unavailable instead of degrading to misses/soft upload success"
+    required: false
+    default: "false"
+  key-prefix:
+    description: "Immutable GitHub cache-key namespace; change it to invalidate all entries"
+    required: false
+    default: bazel-http-v1
+  max-blob-size-mb:
+    description: "Maximum accepted or downloaded AC/CAS object size"
+    required: false
+    default: "512"
+  max-concurrent-operations:
+    description: "Maximum concurrent GitHub cache operations"
+    required: false
+    default: "4"
+  max-uploads-per-minute:
+    description: "Evenly spaced upload limit; must stay below GitHub's 200/minute limit"
+    required: false
+    default: "180"
+  backend-timeout-seconds:
+    description: "Timeout for one GitHub cache load or save"
+    required: false
+    default: "300"
+  port:
+    description: "Loopback port; zero selects an available dynamic port"
+    required: false
+    default: "0"
+outputs:
+  url:
+    description: "Loopback Bazel HTTP remote-cache URL"
+  stats-url:
+    description: "Loopback JSON statistics endpoint available until the post-step"
+  writable:
+    description: "Whether validated objects are published to GitHub Actions cache"
+  bazel-args:
+    description: "Ready-to-use --remote_cache and --remote_upload_local_results flags"
+  initial-stats:
+    description: "Initial statistics JSON"
+  final-stats:
+    description: "Final statistics JSON emitted during post cleanup; also written to the job summary"
+runs:
+  using: node24
+  main: action/main.js
+  post: action/post.js
+  post-if: always()

@@ -1,0 +1,60 @@
+name: Cache v2 smoke
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "seed publishes; restore must download an entry created by an earlier run"
+        required: true
+        default: restore
+        type: choice
+        options:
+          - restore
+          - seed
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: cache
+        name: Start cache adapter
+        uses: ./
+        with:
+          write: ${{ github.event_name == 'push' || inputs.mode == 'seed' }}
+          key-prefix: bazel-http-smoke-v1
+      - name: Prepare stable object
+        id: object
+        shell: bash
+        run: |
+          printf '%s' 'bazel-github-actions-cache-v2-smoke-v0.1.0' > "$RUNNER_TEMP/cache-object"
+          digest=$(sha256sum "$RUNNER_TEMP/cache-object" | cut -d' ' -f1)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Seed cache
+        if: github.event_name == 'push' || inputs.mode == 'seed'
+        shell: bash
+        env:
+          CACHE_URL: ${{ steps.cache.outputs.url }}
+          DIGEST: ${{ steps.object.outputs.digest }}
+        run: curl --fail-with-body --silent --show-error --upload-file "$RUNNER_TEMP/cache-object" "$CACHE_URL/cas/$DIGEST"
+      - name: Restore cache object
+        shell: bash
+        env:
+          CACHE_URL: ${{ steps.cache.outputs.url }}
+          DIGEST: ${{ steps.object.outputs.digest }}
+        run: |
+          curl --fail-with-body --silent --show-error "$CACHE_URL/cas/$DIGEST" --output "$RUNNER_TEMP/restored"
+          cmp "$RUNNER_TEMP/cache-object" "$RUNNER_TEMP/restored"
+      - name: Require a persistent backend hit in restore-only runs
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'restore'
+        shell: bash
+        env:
+          STATS_URL: ${{ steps.cache.outputs.stats-url }}
+        run: |
+          curl --fail-with-body --silent --show-error "$STATS_URL" --output "$RUNNER_TEMP/stats.json"
+          jq --exit-status '.backend_downloads == 1 and .hits == 1' "$RUNNER_TEMP/stats.json"
