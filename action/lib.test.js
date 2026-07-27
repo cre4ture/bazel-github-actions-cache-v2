@@ -5,7 +5,13 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
-const { appendCommand, isForkPullRequest, resolveWriteMode, safeTemporaryDirectory } = require("./lib");
+const {
+  appendCommand,
+  booleanFlag,
+  isForkPullRequest,
+  resolveWriteMode,
+  safeTemporaryDirectory,
+} = require("./lib");
 
 test("fork pull requests are always read-only", () => {
   const payload = {
@@ -47,4 +53,10 @@ test("temporary directory must be below RUNNER_TEMP", () => {
   assert.throws(() => safeTemporaryDirectory(path.dirname(directory)));
   process.env.RUNNER_TEMP = previous;
   fs.rmSync(directory, { recursive: true });
+});
+
+test("Go boolean flags use equals syntax", () => {
+  assert.equal(booleanFlag("write-enabled", true), "--write-enabled=true");
+  assert.equal(booleanFlag("fail-open", false), "--fail-open=false");
+  assert.throws(() => booleanFlag("unsafe flag", true));
 });

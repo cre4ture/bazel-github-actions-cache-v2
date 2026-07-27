@@ -7,6 +7,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const {
   input,
+  booleanFlag,
   mask,
   parseBoolean,
   request,
@@ -76,10 +77,8 @@ async function main() {
     spoolDir,
     "--key-prefix",
     input("key-prefix", "bazel-http-v1"),
-    "--write-enabled",
-    String(writeEnabled),
-    "--fail-open",
-    String(failOpen),
+    booleanFlag("write-enabled", writeEnabled),
+    booleanFlag("fail-open", failOpen),
     "--max-blob-size",
     String(maxBlobSizeMB * 1024 * 1024),
     "--max-concurrent",

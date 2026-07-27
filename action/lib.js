@@ -21,6 +21,15 @@ function parseBoolean(value, name) {
   }
 }
 
+function booleanFlag(name, value) {
+  if (typeof value !== "boolean" || !/^[a-z][a-z-]*$/.test(name)) {
+    throw new Error("invalid boolean flag");
+  }
+  // Go's flag package treats a bare bool flag as true and does not consume the
+  // next argument. Always use = so later flags are still parsed.
+  return `--${name}=${value}`;
+}
+
 function eventPayload() {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (!eventPath) return {};
@@ -104,6 +113,7 @@ function safeTemporaryDirectory(candidate) {
 
 module.exports = {
   appendCommand,
+  booleanFlag,
   eventPayload,
   input,
   isForkPullRequest,
