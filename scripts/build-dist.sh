@@ -14,7 +14,7 @@ ldflags="-s -w -buildid= -X main.version=$version"
 for architecture in amd64 arm64; do
   output="$project_dir/dist/cache-server-linux-$architecture"
   CGO_ENABLED=0 GOOS=linux GOARCH="$architecture" \
-    go build -trimpath -ldflags "$ldflags" -o "$output" ./cmd/cache-server
+    go build -buildvcs=false -trimpath -ldflags "$ldflags" -o "$output" ./cmd/cache-server
   chmod 0755 "$output"
 done
 (

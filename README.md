@@ -182,7 +182,7 @@ git diff --exit-code -- dist
 ```
 
 Release binaries are built with `CGO_ENABLED=0`, `-trimpath`, and an empty Go
-build ID for deterministic Linux amd64/arm64 output. CI rebuilds them and
+build ID, with VCS stamping disabled, for deterministic Linux amd64/arm64 output. CI rebuilds them and
 requires a byte-for-byte match.
 
 The smoke workflow has two modes. A default-branch push seeds a stable object.
