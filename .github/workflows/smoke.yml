@@ -32,7 +32,7 @@ jobs:
         id: object
         shell: bash
         run: |
-          printf '%s' 'bazel-github-actions-cache-v2-smoke-v0.1.0' > "$RUNNER_TEMP/cache-object"
+          printf '%s' 'bazel-github-actions-cache-v2-smoke-v0.2.0' > "$RUNNER_TEMP/cache-object"
           digest=$(sha256sum "$RUNNER_TEMP/cache-object" | cut -d' ' -f1)
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Seed cache
