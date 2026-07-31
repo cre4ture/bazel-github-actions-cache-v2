@@ -204,6 +204,33 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request, key, kind, d
 		http.NotFound(w, r)
 		return
 	}
+	if kind == "ac" {
+		if err := s.validateActionResult(r.Context(), obj); err != nil {
+			switch {
+			case errors.Is(err, errIncompleteActionResult):
+				s.stats.incompleteActionResults.Add(1)
+				s.stats.misses.Add(1)
+				s.cfg.Logger.Printf("action result ac/%s is incomplete: %s", digest, safeError(err))
+				http.NotFound(w, r)
+			case errors.Is(err, errInvalidActionResult):
+				s.stats.invalidActionResults.Add(1)
+				s.stats.misses.Add(1)
+				s.cfg.Logger.Printf("action result ac/%s is invalid: %s", digest, safeError(err))
+				http.NotFound(w, r)
+			default:
+				s.stats.backendLoadErrors.Add(1)
+				s.cfg.Logger.Printf("action result ac/%s validation failed: %s", digest, safeError(err))
+				if s.cfg.FailOpen {
+					s.stats.misses.Add(1)
+					http.NotFound(w, r)
+				} else {
+					http.Error(w, "cache backend unavailable", http.StatusBadGateway)
+				}
+			}
+			return
+		}
+		s.stats.validatedActionResults.Add(1)
+	}
 
 	file, err := os.Open(obj.path)
 	if err != nil {
@@ -307,6 +334,28 @@ func (s *Server) resolve(ctx context.Context, key, kind, digest string) (object,
 	return obj, true, nil
 }
 
+func (s *Server) exists(ctx context.Context, key string) (bool, error) {
+	s.objectsMu.RLock()
+	_, ok := s.objects[key]
+	s.objectsMu.RUnlock()
+	if ok {
+		return true, nil
+	}
+	return s.backendExists(ctx, key)
+}
+
+func (s *Server) backendExists(ctx context.Context, key string) (bool, error) {
+	if err := s.acquire(ctx); err != nil {
+		return false, err
+	}
+	defer s.release()
+
+	backendCtx, cancel := context.WithTimeout(ctx, s.cfg.BackendTimeout)
+	defer cancel()
+	s.stats.backendExistenceChecks.Add(1)
+	return s.cfg.Backend.Exists(backendCtx, key)
+}
+
 func (s *Server) handlePut(w http.ResponseWriter, r *http.Request, key, kind, digest string) {
 	if encoding := r.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
 		s.reject(w, "content encoding is unsupported", http.StatusUnsupportedMediaType)
@@ -373,6 +422,33 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request, key, kind, di
 		s.stats.discardedUploads.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 		return
+	}
+	if kind == "ac" {
+		if err := s.validateActionResultForPublication(r.Context(), object{path: path, size: n}); err != nil {
+			switch {
+			case errors.Is(err, errIncompleteActionResult):
+				s.stats.incompleteActionResults.Add(1)
+				s.stats.skippedActionResultUploads.Add(1)
+				s.cfg.Logger.Printf("not publishing incomplete action result ac/%s: %s", digest, safeError(err))
+				w.WriteHeader(http.StatusNoContent)
+			case errors.Is(err, errInvalidActionResult):
+				s.stats.invalidActionResults.Add(1)
+				s.stats.skippedActionResultUploads.Add(1)
+				s.cfg.Logger.Printf("not publishing invalid action result ac/%s: %s", digest, safeError(err))
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				s.stats.backendLoadErrors.Add(1)
+				s.cfg.Logger.Printf("action result ac/%s publication validation failed: %s", digest, safeError(err))
+				if s.cfg.FailOpen {
+					s.stats.skippedActionResultUploads.Add(1)
+					w.WriteHeader(http.StatusNoContent)
+				} else {
+					http.Error(w, "cache backend unavailable", http.StatusBadGateway)
+				}
+			}
+			return
+		}
+		s.stats.validatedActionResults.Add(1)
 	}
 
 	if err := s.acquire(r.Context()); err != nil {

@@ -18,11 +18,12 @@ import (
 )
 
 type memoryBackend struct {
-	mu      sync.Mutex
-	objects map[string][]byte
-	loadErr error
-	saveErr error
-	saves   int
+	mu        sync.Mutex
+	objects   map[string][]byte
+	loadErr   error
+	existsErr error
+	saveErr   error
+	saves     int
 }
 
 func newMemoryBackend() *memoryBackend {
@@ -41,6 +42,16 @@ func (b *memoryBackend) Load(_ context.Context, key string, dst io.Writer) (bool
 	}
 	_, err := dst.Write(data)
 	return true, err
+}
+
+func (b *memoryBackend) Exists(_ context.Context, key string) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.existsErr != nil {
+		return false, b.existsErr
+	}
+	_, ok := b.objects[key]
+	return ok, nil
 }
 
 func (b *memoryBackend) Save(_ context.Context, key string, src *os.File, size int64) error {
@@ -189,11 +200,14 @@ func TestFailOpenBackendErrors(t *testing.T) {
 	backend.loadErr = nil
 	backend.saveErr = errors.New("unavailable")
 	data := []byte("result")
-	request = httptest.NewRequest(http.MethodPut, "/ac/"+strings.Repeat("b", 64), bytes.NewReader(data))
+	request = httptest.NewRequest(http.MethodPut, "/cas/"+digest(data), bytes.NewReader(data))
 	response = httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want soft-success", response.Code)
+	}
+	if server.Snapshot().BackendSaveErrors != 1 {
+		t.Fatalf("backend save failure was not counted: %+v", server.Snapshot())
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 // Backend is the small persistence interface used by the HTTP cache server.
 // Implementations must treat keys as immutable.
 type Backend interface {
+	Exists(ctx context.Context, key string) (bool, error)
 	Load(ctx context.Context, key string, dst io.Writer) (bool, error)
 	Save(ctx context.Context, key string, src *os.File, size int64) error
 }
@@ -41,7 +42,7 @@ func NewActionsBackend(timeout time.Duration) (*ActionsBackend, error) {
 	c, err := actionscache.TryEnv(actionscache.Opt{
 		Client:    &http.Client{},
 		Timeout:   timeout,
-		UserAgent: "bazel-github-actions-cache-v2/0.1",
+		UserAgent: "bazel-github-actions-cache-v2/0.2",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("initialize GitHub Actions cache v2: %w", err)
@@ -67,6 +68,14 @@ func (b *ActionsBackend) Load(ctx context.Context, key string, dst io.Writer) (b
 		return false, fmt.Errorf("download cache entry: %w", err)
 	}
 	return true, nil
+}
+
+func (b *ActionsBackend) Exists(ctx context.Context, key string) (bool, error) {
+	entry, err := b.cache.Load(ctx, key)
+	if err != nil {
+		return false, fmt.Errorf("locate cache entry: %w", err)
+	}
+	return entry != nil, nil
 }
 
 func (b *ActionsBackend) Save(ctx context.Context, key string, src *os.File, size int64) error {

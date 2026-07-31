@@ -103,6 +103,10 @@ Supported:
 - `GET`, `HEAD`, and `PUT` on exactly `/ac/<lowercase-sha256>`
 - mandatory `Content-Length` and identity encoding
 - CAS SHA-256 verification before publication and after download
+- structural validation of REAPI `ActionResult`, `Tree`, and `Directory`
+  messages
+- AC hits only when every referenced CAS object still exists
+- AC publication only after every referenced CAS object is persistent
 - immutable cache keys
 
 Not currently supported:
@@ -129,6 +133,15 @@ runs can restore caches from the default branch according to GitHub's cache
 scope rules. Cache misses and eviction are normal and must never affect build
 correctness.
 
+Because GitHub evicts entries independently, an AC entry can outlive one of its
+referenced CAS entries. The adapter checks the complete output closure before
+serving or publishing an action result and degrades an incomplete closure to an
+ordinary cache miss. Direct output blobs use cache-entry existence checks
+without downloading their contents; `Tree` and recursive `Directory` metadata
+must be downloaded so their file references can be checked. One action result
+is limited to 100,000 distinct validation operations to bound amplification
+from a malformed cache entry.
+
 - [GitHub dependency cache reference](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)
 - [GitHub cache limits](https://docs.github.com/en/actions/reference/limits#cache-limits)
 - [GitHub cache scope restrictions](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manage-caches#restrictions-for-accessing-a-cache)
@@ -141,6 +154,8 @@ The default is fail-open:
 - backend GET/HEAD errors are logged and returned to Bazel as cache misses;
 - backend PUT errors are logged after the request body was bounded, spooled,
   and validated, then returned as a soft success;
+- incomplete or malformed action results are not served or published and are
+  reported separately in the final statistics;
 - invalid paths, sizes, encodings, and CAS digests are always rejected.
 
 Set `fail-on-cache-error: true` to return backend failures as HTTP 502. The
@@ -163,7 +178,9 @@ self-hosted runners still applies.
 
 Action-cache values cannot be content-verified against the action digest (the
 digest addresses the action, not the serialized result). Cache poisoning is
-therefore controlled by restricting writes to trusted workflows.
+therefore controlled by restricting writes to trusted workflows. Their
+serialized REAPI structure and referenced SHA-256 CAS closure are still
+validated before use.
 
 ## Development and reproducible binaries
 
@@ -176,7 +193,7 @@ go vet ./...
 go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 node --test action/*.test.js
-VERSION=v0.1.0 scripts/build-dist.sh
+VERSION=v0.2.0 scripts/build-dist.sh
 git diff --exit-code -- dist
 (cd dist && sha256sum --check SHA256SUMS)
 ```
