@@ -141,6 +141,10 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		s.reject(w, "path must be /cas/<lowercase-sha256> or /ac/<lowercase-sha256>", http.StatusBadRequest)
 		return
 	}
+	if kind == "cas" && digest == emptySHA256Digest && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		s.handleImplicitEmptyCASRead(w, r)
+		return
+	}
 	key := s.cfg.KeyPrefix + "-" + kind + "-" + digest
 	switch r.Method {
 	case http.MethodHead, http.MethodGet:
@@ -151,6 +155,14 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "GET, HEAD, PUT")
 		s.reject(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleImplicitEmptyCASRead(w http.ResponseWriter, r *http.Request) {
+	s.stats.hits.Add(1)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", "0")
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	w.WriteHeader(http.StatusOK)
 }
 
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {

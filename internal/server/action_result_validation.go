@@ -65,6 +65,9 @@ func (s *Server) validateActionResultClosure(
 }
 
 func (v *actionResultValidator) validateBlob(reference digestReference) error {
+	if isImplicitEmptyDigest(reference) {
+		return nil
+	}
 	if alreadyValidated, err := rememberDigest(v.validatedBlobs, reference); err != nil {
 		return fmt.Errorf("%w: %v", errInvalidActionResult, err)
 	} else if alreadyValidated {

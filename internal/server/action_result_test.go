@@ -110,6 +110,25 @@ func TestActionResultReadRequiresCompleteCASClosure(t *testing.T) {
 	})
 }
 
+func TestActionResultReadAllowsImplicitEmptyCASDigest(t *testing.T) {
+	emptyReference := referenceFor(nil)
+	actionResult := bytesField(6, digestProto(emptyReference))
+	actionDigest := strings.Repeat("1", 64)
+	backend := newMemoryBackend()
+	backend.objects["test-v1-ac-"+actionDigest] = actionResult
+	server := testServer(t, backend, nil)
+
+	response := readCacheObject(server, "/ac/"+actionDigest)
+	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), actionResult) {
+		t.Fatalf("status/body = %d/%q", response.Code, response.Body.Bytes())
+	}
+	stats := server.Snapshot()
+	if stats.ValidatedActionResults != 1 || stats.IncompleteActionResults != 0 ||
+		stats.Hits != 1 || stats.BackendDownloads != 1 || stats.BackendExistenceChecks != 0 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+}
+
 func TestActionResultReadValidatesTreeFileClosure(t *testing.T) {
 	fileReference := referenceFor([]byte("missing nested file"))
 	tree := bytesField(1, bytesField(1, fileNodeProto(fileReference)))
@@ -272,6 +291,28 @@ func TestActionResultUploadPublishesOnlyCompleteCASClosure(t *testing.T) {
 			t.Fatalf("unexpected stats: %+v", stats)
 		}
 	})
+}
+
+func TestActionResultUploadAllowsImplicitEmptyCASDigest(t *testing.T) {
+	emptyReference := referenceFor(nil)
+	actionResult := bytesField(8, digestProto(emptyReference))
+	actionDigest := strings.Repeat("2", 64)
+	backend := newMemoryBackend()
+	server := testServer(t, backend, nil)
+
+	response := putCacheObject(server, "/ac/"+actionDigest, actionResult)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+	}
+	if !bytes.Equal(backend.objects["test-v1-ac-"+actionDigest], actionResult) {
+		t.Fatal("action result with an implicit empty digest was not published")
+	}
+	stats := server.Snapshot()
+	if stats.Uploads != 1 || stats.ValidatedActionResults != 1 ||
+		stats.IncompleteActionResults != 0 || stats.SkippedActionResultUploads != 0 ||
+		stats.BackendExistenceChecks != 0 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
 }
 
 func readCacheObject(server *Server, path string) *httptest.ResponseRecorder {
