@@ -109,6 +109,7 @@ Supported:
 - AC publication only after every referenced CAS object is persistent
 - implicit handling of the standard SHA-256 zero-byte CAS digest
 - immutable cache keys
+- per-job coalescing of duplicate immutable `PUT`s before rate limiting and backend publication
 
 Not currently supported:
 
@@ -123,9 +124,15 @@ Not currently supported:
 Every Bazel AC or CAS object is one GitHub Actions cache entry. This is the
 simplest correct mapping, but large build graphs can create thousands of small
 entries. GitHub documents a limit of 200 cache creations per minute; the action
-defaults to 180 evenly spaced uploads and exposes throttle statistics. If this
-becomes a bottleneck, object segmentation should be designed from measurements
-rather than silently bypassing the limit.
+defaults to 180 evenly spaced uploads and exposes throttle statistics. Duplicate
+immutable `PUT`s received by the same server are coalesced before they consume
+an upload slot; `deduplicated_uploads` reports those avoided backend saves. If
+the remaining unique entries become a bottleneck, object segmentation should be
+designed from measurements rather than silently bypassing the limit.
+
+The proposed next-generation design is documented in
+[CARv2 packs and a manifest DAG](docs/carv2-manifest-dag-concept.md). It is not
+implemented by this release.
 
 GitHub's repository cache quota, eviction policy, and branch restrictions all
 apply. At the time of writing, the default repository quota is 10 GB and caches

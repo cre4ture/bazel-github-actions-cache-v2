@@ -11,6 +11,7 @@ type Stats struct {
 	Hits                       uint64 `json:"hits"`
 	Misses                     uint64 `json:"misses"`
 	Uploads                    uint64 `json:"uploads"`
+	DeduplicatedUploads        uint64 `json:"deduplicated_uploads"`
 	DiscardedUploads           uint64 `json:"discarded_uploads"`
 	BackendDownloads           uint64 `json:"backend_downloads"`
 	BackendExistenceChecks     uint64 `json:"backend_existence_checks"`
@@ -31,6 +32,7 @@ type counters struct {
 	hits                       atomic.Uint64
 	misses                     atomic.Uint64
 	uploads                    atomic.Uint64
+	deduplicatedUploads        atomic.Uint64
 	discardedUploads           atomic.Uint64
 	backendDownloads           atomic.Uint64
 	backendExistenceChecks     atomic.Uint64
@@ -52,6 +54,7 @@ func (c *counters) snapshot() Stats {
 		Hits:                       c.hits.Load(),
 		Misses:                     c.misses.Load(),
 		Uploads:                    c.uploads.Load(),
+		DeduplicatedUploads:        c.deduplicatedUploads.Load(),
 		DiscardedUploads:           c.discardedUploads.Load(),
 		BackendDownloads:           c.backendDownloads.Load(),
 		BackendExistenceChecks:     c.backendExistenceChecks.Load(),

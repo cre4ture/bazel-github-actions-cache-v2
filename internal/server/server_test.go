@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/cre4ture/bazel-github-actions-cache-v2/internal/cache"
 )
 
 type memoryBackend struct {
@@ -24,6 +26,23 @@ type memoryBackend struct {
 	existsErr error
 	saveErr   error
 	saves     int
+}
+
+type blockingSaveBackend struct {
+	*memoryBackend
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingSaveBackend) Save(ctx context.Context, key string, src *os.File, size int64) error {
+	b.once.Do(func() { close(b.started) })
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-b.release:
+	}
+	return b.memoryBackend.Save(ctx, key, src, size)
 }
 
 func newMemoryBackend() *memoryBackend {
@@ -69,7 +88,7 @@ func (b *memoryBackend) Save(_ context.Context, key string, src *os.File, size i
 	return nil
 }
 
-func testServer(t *testing.T, backend *memoryBackend, mutate func(*Config)) *Server {
+func testServer(t *testing.T, backend cache.Backend, mutate func(*Config)) *Server {
 	t.Helper()
 	cfg := Config{
 		Backend:          backend,
@@ -130,6 +149,55 @@ func TestCASPutHeadGet(t *testing.T) {
 	stats := server.Snapshot()
 	if stats.Uploads != 1 || stats.Hits != 2 || stats.BytesServed != uint64(len(data)) {
 		t.Fatalf("unexpected stats: %+v", stats)
+	}
+}
+
+func TestDuplicateCASPutsArePublishedOnlyOnce(t *testing.T) {
+	backend := newMemoryBackend()
+	server := testServer(t, backend, nil)
+	data := []byte("duplicate output")
+	path := "/cas/" + digest(data)
+
+	for range 2 {
+		response := putCacheObject(server, path, data)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+		}
+	}
+	stats := server.Snapshot()
+	if backend.saves != 1 || stats.Uploads != 1 || stats.DeduplicatedUploads != 1 {
+		t.Fatalf("duplicate PUT reached backend: saves=%d stats=%+v", backend.saves, stats)
+	}
+}
+
+func TestConcurrentDuplicateCASPutsShareOnePublication(t *testing.T) {
+	backend := &blockingSaveBackend{
+		memoryBackend: newMemoryBackend(),
+		started:       make(chan struct{}),
+		release:       make(chan struct{}),
+	}
+	server := testServer(t, backend, nil)
+	data := []byte("concurrent duplicate output")
+	path := "/cas/" + digest(data)
+
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	put := func() {
+		responses <- putCacheObject(server, path, data)
+	}
+	go put()
+	<-backend.started
+	go put()
+	close(backend.release)
+
+	for range 2 {
+		response := <-responses
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+		}
+	}
+	stats := server.Snapshot()
+	if backend.saves != 1 || stats.Uploads != 1 || stats.DeduplicatedUploads != 1 {
+		t.Fatalf("concurrent PUTs were not coalesced: saves=%d stats=%+v", backend.saves, stats)
 	}
 }
 

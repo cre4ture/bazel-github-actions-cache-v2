@@ -49,13 +49,21 @@ type object struct {
 	size int64
 }
 
+type publication struct {
+	done chan struct{}
+	err  error
+}
+
 type Server struct {
-	cfg       Config
-	stats     counters
-	objectsMu sync.RWMutex
-	objects   map[string]object
-	sem       chan struct{}
-	limiter   *intervalLimiter
+	cfg            Config
+	stats          counters
+	objectsMu      sync.RWMutex
+	objects        map[string]object
+	publicationsMu sync.Mutex
+	published      map[string]struct{}
+	publishing     map[string]*publication
+	sem            chan struct{}
+	limiter        *intervalLimiter
 }
 
 func New(cfg Config) (*Server, error) {
@@ -87,10 +95,12 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("create cache directory: %w", err)
 	}
 	return &Server{
-		cfg:     cfg,
-		objects: make(map[string]object),
-		sem:     make(chan struct{}, cfg.MaxConcurrent),
-		limiter: newIntervalLimiter(cfg.UploadsPerMinute),
+		cfg:        cfg,
+		objects:    make(map[string]object),
+		published:  make(map[string]struct{}),
+		publishing: make(map[string]*publication),
+		sem:        make(chan struct{}, cfg.MaxConcurrent),
+		limiter:    newIntervalLimiter(cfg.UploadsPerMinute),
 	}, nil
 }
 
@@ -463,30 +473,81 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request, key, kind, di
 		s.stats.validatedActionResults.Add(1)
 	}
 
-	if err := s.acquire(r.Context()); err != nil {
+	deduplicated, err := s.publishOnce(r.Context(), key, file, n)
+	if err != nil {
 		s.handleSaveError(w, kind, digest, err)
 		return
 	}
+	if deduplicated {
+		s.stats.deduplicatedUploads.Add(1)
+	} else {
+		s.stats.uploads.Add(1)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// publishOnce coalesces identical immutable keys for the lifetime of the
+// server. Only the request which creates the publication reaches the backend
+// and consumes an upload-rate-limit slot. A failed publication is not cached,
+// so a later request can retry it.
+func (s *Server) publishOnce(ctx context.Context, key string, file *os.File, size int64) (bool, error) {
+	for {
+		s.publicationsMu.Lock()
+		if _, ok := s.published[key]; ok {
+			s.publicationsMu.Unlock()
+			return true, nil
+		}
+		if ongoing, ok := s.publishing[key]; ok {
+			done := ongoing.done
+			s.publicationsMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-done:
+				if ongoing.err == nil {
+					return true, nil
+				}
+				// The publishing request failed. Try this request as a new
+				// leader so transient backend failures remain retryable.
+				continue
+			}
+		}
+
+		ongoing := &publication{done: make(chan struct{})}
+		s.publishing[key] = ongoing
+		s.publicationsMu.Unlock()
+
+		err := s.publish(ctx, key, file, size)
+
+		s.publicationsMu.Lock()
+		if err == nil {
+			s.published[key] = struct{}{}
+		}
+		ongoing.err = err
+		delete(s.publishing, key)
+		close(ongoing.done)
+		s.publicationsMu.Unlock()
+		return false, err
+	}
+}
+
+func (s *Server) publish(ctx context.Context, key string, file *os.File, size int64) error {
+	if err := s.acquire(ctx); err != nil {
+		return err
+	}
 	defer s.release()
-	if waited, err := s.limiter.wait(r.Context()); err != nil {
-		s.handleSaveError(w, kind, digest, err)
-		return
+	if waited, err := s.limiter.wait(ctx); err != nil {
+		return err
 	} else if waited {
 		s.stats.throttleWaits.Add(1)
 	}
 
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		s.handleSaveError(w, kind, digest, err)
-		return
+		return err
 	}
-	backendCtx, cancel := context.WithTimeout(r.Context(), s.cfg.BackendTimeout)
+	backendCtx, cancel := context.WithTimeout(ctx, s.cfg.BackendTimeout)
 	defer cancel()
-	if err := s.cfg.Backend.Save(backendCtx, key, file, n); err != nil {
-		s.handleSaveError(w, kind, digest, err)
-		return
-	}
-	s.stats.uploads.Add(1)
-	w.WriteHeader(http.StatusNoContent)
+	return s.cfg.Backend.Save(backendCtx, key, file, size)
 }
 
 func (s *Server) handleSaveError(w http.ResponseWriter, kind, digest string, err error) {
