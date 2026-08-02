@@ -107,6 +107,7 @@ Supported:
   messages
 - AC hits only when every referenced CAS object still exists
 - AC publication only after every referenced CAS object is persistent
+- implicit handling of the standard SHA-256 zero-byte CAS digest
 - immutable cache keys
 
 Not currently supported:

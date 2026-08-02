@@ -8,6 +8,8 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
+const emptySHA256Digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
 func parseDigest(data []byte) (digestReference, error) {
 	var hash string
 	var size int64
@@ -47,6 +49,10 @@ func parseDigest(data []byte) (digestReference, error) {
 		return digestReference{}, errors.New("digest.hash is not a lowercase SHA-256 digest")
 	}
 	return digestReference{hash: hash, size: size}, nil
+}
+
+func isImplicitEmptyDigest(reference digestReference) bool {
+	return reference.hash == emptySHA256Digest && reference.size == 0
 }
 
 type wireField struct {

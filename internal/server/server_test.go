@@ -133,6 +133,24 @@ func TestCASPutHeadGet(t *testing.T) {
 	}
 }
 
+func TestEmptyCASDigestIsServedImplicitly(t *testing.T) {
+	server := testServer(t, newMemoryBackend(), nil)
+	path := "/cas/" + digest(nil)
+
+	for _, method := range []string{http.MethodHead, http.MethodGet} {
+		request := httptest.NewRequest(method, path, nil)
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusOK || response.Header().Get("Content-Length") != "0" || response.Body.Len() != 0 {
+			t.Fatalf("%s status/length/body = %d/%q/%q", method, response.Code, response.Header().Get("Content-Length"), response.Body.Bytes())
+		}
+	}
+	stats := server.Snapshot()
+	if stats.Hits != 2 || stats.BackendDownloads != 0 || stats.BackendExistenceChecks != 0 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+}
+
 func TestCASRejectsDigestMismatch(t *testing.T) {
 	server := testServer(t, newMemoryBackend(), nil)
 	request := httptest.NewRequest(http.MethodPut, "/cas/"+strings.Repeat("0", 64), strings.NewReader("not zero"))
