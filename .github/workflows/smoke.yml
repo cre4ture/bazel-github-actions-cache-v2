@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   smoke:
@@ -27,7 +28,8 @@ jobs:
         uses: ./
         with:
           write: ${{ github.event_name == 'push' || inputs.mode == 'seed' }}
-          key-prefix: bazel-http-smoke-v1
+          key-prefix: bazel-http-smoke-car-v1
+          storage-mode: packs
       - name: Prepare stable object
         id: object
         shell: bash
@@ -57,4 +59,4 @@ jobs:
           STATS_URL: ${{ steps.cache.outputs.stats-url }}
         run: |
           curl --fail-with-body --silent --show-error "$STATS_URL" --output "$RUNNER_TEMP/stats.json"
-          jq --exit-status '.backend_downloads == 1 and .hits == 1' "$RUNNER_TEMP/stats.json"
+          jq --exit-status '.backend_downloads == 2 and .pack_downloads == 1 and .hits == 1' "$RUNNER_TEMP/stats.json"

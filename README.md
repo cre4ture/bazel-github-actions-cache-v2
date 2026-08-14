@@ -53,6 +53,50 @@ For a trusted release or scheduled workflow, set `write: true`. For all
 untrusted code, keep `write: false` and pass the emitted `writable` value to
 Bazel.
 
+### CARv2 packs and manifest DAGs
+
+`storage-mode: packs` is the v0.3 storage format. Instead of creating one
+GitHub cache entry for every CAS or Action Cache object, it writes many values
+to a modest CARv2 archive (8 MiB by default) and publishes one immutable
+DAG-CBOR manifest after that archive is available. A large output is placed in
+its own archive. The result is normally two Actions-cache creations per pack
+(one pack and one manifest), rather than one per Bazel object.
+
+```yaml
+permissions:
+  contents: read
+  actions: read # manifest discovery for storage-mode: packs
+
+steps:
+  - id: bazel-cache
+    uses: cre4ture/bazel-github-actions-cache-v2@<FULL_COMMIT_SHA>
+    with:
+      write: auto
+      key-prefix: ironmesh-bazel-car-v1
+      storage-mode: packs
+      pack-size-mb: "8"
+```
+
+The `github-token` input defaults to `${{ github.token }}` and is used only to
+list immutable manifest keys through GitHub's documented Actions-cache REST
+endpoint. It must have `actions: read`; no external service, secret, or write
+token is needed. Keep the packed mode in a new `key-prefix`: it deliberately
+does not reinterpret or mix v0.2 object keys.
+
+Writers discover all current manifest heads at startup and make each new
+manifest a child of every head they observed. Parallel writers can therefore
+publish siblings without overwriting each other. Readers discover and merge all
+heads. If two manifests contain different Action Results for the same action
+digest, that digest is treated as a cache miss rather than picking one result.
+Manifest discovery is eventually consistent by design: an unseen manifest is
+only a temporary miss.
+
+The server flushes a pending pack when it reaches `pack-size-mb`, at least once
+per `pack-flush-seconds`, and unconditionally during the action post step. It
+uploads the CARv2 file first and the manifest second; the manifest is the
+commit point. Thus cancellation, eviction, a corrupt pack, or a missing output
+closure can only lose a cache hit and cannot supply incomplete build output.
+
 ### IronMesh example
 
 The action can replace the external-cache URL and token in the Bazel job:
@@ -84,6 +128,11 @@ Do not enable Bazel remote-cache compression with this release.
 | `write` | `auto` | `auto`, `true`, or `false`; forks are always read-only |
 | `fail-on-cache-error` | `false` | Strict mode; by default backend failures degrade to misses/soft upload success |
 | `key-prefix` | `bazel-http-v1` | Immutable namespace; change to invalidate entries |
+| `storage-mode` | `objects` | `objects` (v0.2) or `packs` (CARv2 and manifest DAG) |
+| `pack-size-mb` | `8` | Target size for a CARv2 archive; only for `packs`, 1–32 MiB |
+| `pack-flush-seconds` | `30` | Maximum local staging interval; only for `packs` |
+| `max-manifests` | `2048` | Bound on REST-discovered immutable manifests; only for `packs` |
+| `github-token` | `${{ github.token }}` | `actions: read` token for packed-manifest discovery |
 | `max-blob-size-mb` | `512` | Maximum spooled upload/download size |
 | `max-concurrent-operations` | `4` | Backend-operation backpressure |
 | `max-uploads-per-minute` | `180` | Evenly spaced uploads; must be below 200 |
@@ -110,6 +159,8 @@ Supported:
 - implicit handling of the standard SHA-256 zero-byte CAS digest
 - immutable cache keys
 - per-job coalescing of duplicate immutable `PUT`s before rate limiting and backend publication
+- opt-in CARv2 archives with footer indexes, DAG-CBOR manifests, concurrent
+  writer head merging, and action-result conflict detection
 
 Not currently supported:
 
@@ -121,18 +172,13 @@ Not currently supported:
 
 ## Limits and operational model
 
-Every Bazel AC or CAS object is one GitHub Actions cache entry. This is the
-simplest correct mapping, but large build graphs can create thousands of small
-entries. GitHub documents a limit of 200 cache creations per minute; the action
-defaults to 180 evenly spaced uploads and exposes throttle statistics. Duplicate
-immutable `PUT`s received by the same server are coalesced before they consume
-an upload slot; `deduplicated_uploads` reports those avoided backend saves. If
-the remaining unique entries become a bottleneck, object segmentation should be
-designed from measurements rather than silently bypassing the limit.
-
-The proposed next-generation design is documented in
-[CARv2 packs and a manifest DAG](docs/carv2-manifest-dag-concept.md). It is not
-implemented by this release.
+The `objects` format maps every Bazel AC or CAS object to one GitHub Actions
+cache entry. It remains the default rollback path. GitHub documents a limit of
+200 cache creations per minute; the action defaults to 180 evenly spaced
+uploads. In `packs` mode a successful flush consumes one creation for the CARv2
+pack and one for its manifest, so a large build graph is governed by pack count
+instead of object count. `pack_uploads`, `manifest_uploads`, and
+`pack_downloads` make that distinction explicit in the final statistics.
 
 GitHub's repository cache quota, eviction policy, and branch restrictions all
 apply. At the time of writing, the default repository quota is 10 GB and caches
@@ -144,11 +190,10 @@ correctness.
 Because GitHub evicts entries independently, an AC entry can outlive one of its
 referenced CAS entries. The adapter checks the complete output closure before
 serving or publishing an action result and degrades an incomplete closure to an
-ordinary cache miss. Direct output blobs use cache-entry existence checks
-without downloading their contents; `Tree` and recursive `Directory` metadata
-must be downloaded so their file references can be checked. One action result
-is limited to 100,000 distinct validation operations to bound amplification
-from a malformed cache entry.
+ordinary cache miss. In packed mode this restores and verifies each referenced
+CARv2 pack and CAS block before serving the Action Result. One action result is
+limited to 100,000 distinct validation operations to bound amplification from a
+malformed cache entry.
 
 - [GitHub dependency cache reference](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)
 - [GitHub cache limits](https://docs.github.com/en/actions/reference/limits#cache-limits)
@@ -201,7 +246,7 @@ go vet ./...
 go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 node --test action/*.test.js
-VERSION=v0.2.2 scripts/build-dist.sh
+VERSION=v0.3.0 scripts/build-dist.sh
 git diff --exit-code -- dist
 (cd dist && sha256sum --check SHA256SUMS)
 ```
@@ -210,9 +255,9 @@ Release binaries are built with `CGO_ENABLED=0`, `-trimpath`, and an empty Go
 build ID, with VCS stamping disabled, for deterministic Linux amd64/arm64 output. CI rebuilds them and
 requires a byte-for-byte match.
 
-The smoke workflow has two modes. A default-branch push seeds a stable object.
-A separate `workflow_dispatch` restore run is required to download that object
-on a new runner and asserts `backend_downloads == 1`.
+The smoke workflow has two modes. A default-branch push seeds a stable packed
+object. A separate `workflow_dispatch` restore run downloads the manifest and
+one CARv2 pack on a new runner and asserts the persistent hit statistics.
 
 ## License
 

@@ -40,6 +40,10 @@ func run() error {
 		port             = flag.Int("port", 0, "loopback TCP port; zero selects a dynamic port")
 		cacheDir         = flag.String("cache-dir", "", "local spool directory")
 		keyPrefix        = flag.String("key-prefix", "bazel-http-v1", "GitHub cache key prefix")
+		storageMode      = flag.String("storage-mode", "objects", "storage mode: objects or packs")
+		packSize         = flag.Int64("pack-size", 8*1024*1024, "target CARv2 pack size in bytes")
+		packFlush        = flag.Duration("pack-flush-interval", 30*time.Second, "maximum delay before flushing pending CARv2 data")
+		maxManifests     = flag.Int("max-manifests", 2048, "maximum manifest cache entries to discover")
 		writeEnabled     = flag.Bool("write-enabled", false, "publish validated uploads")
 		failOpen         = flag.Bool("fail-open", true, "degrade backend errors to misses/success")
 		maxBlobSize      = flag.Int64("max-blob-size", 512*1024*1024, "maximum object size in bytes")
@@ -85,19 +89,31 @@ func run() error {
 		}
 	}
 	logger := log.New(os.Stderr, "bazel-gha-cache: ", log.LstdFlags|log.LUTC)
+	var catalog cache.Catalog
+	if *storageMode == "packs" {
+		catalog, err = cache.NewActionsCatalog(*backendTimeout)
+		if err != nil {
+			return err
+		}
+	}
 	srv, err := cacheserver.New(cacheserver.Config{
-		Backend:          backend,
-		CacheDir:         dir,
-		KeyPrefix:        *keyPrefix,
-		WriteEnabled:     *writeEnabled,
-		FailOpen:         *failOpen,
-		MaxBlobSize:      *maxBlobSize,
-		MaxConcurrent:    *maxConcurrent,
-		UploadsPerMinute: *uploadsPerMinute,
-		BackendTimeout:   *backendTimeout,
-		ShutdownToken:    os.Getenv("BAZEL_GHA_CACHE_SHUTDOWN_TOKEN"),
-		Shutdown:         requestShutdown,
-		Logger:           logger,
+		Backend:           backend,
+		Catalog:           catalog,
+		CacheDir:          dir,
+		KeyPrefix:         *keyPrefix,
+		StorageMode:       *storageMode,
+		PackSize:          *packSize,
+		PackFlushInterval: *packFlush,
+		MaxManifests:      *maxManifests,
+		WriteEnabled:      *writeEnabled,
+		FailOpen:          *failOpen,
+		MaxBlobSize:       *maxBlobSize,
+		MaxConcurrent:     *maxConcurrent,
+		UploadsPerMinute:  *uploadsPerMinute,
+		BackendTimeout:    *backendTimeout,
+		ShutdownToken:     os.Getenv("BAZEL_GHA_CACHE_SHUTDOWN_TOKEN"),
+		Shutdown:          requestShutdown,
+		Logger:            logger,
 	})
 	if err != nil {
 		return err
@@ -156,6 +172,11 @@ func run() error {
 		logger.Printf("graceful shutdown failed: %v", err)
 		_ = httpServer.Close()
 	}
+	flushContext, flushCancel := context.WithTimeout(context.Background(), *backendTimeout)
+	if err := srv.Close(flushContext); err != nil {
+		logger.Printf("flush packed cache: %v", err)
+	}
+	flushCancel()
 	stats := srv.Snapshot()
 	if err := cacheserver.WriteStatsFile(*statsFile, stats); err != nil {
 		logger.Printf("write stats: %v", err)

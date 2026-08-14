@@ -54,6 +54,18 @@ async function main() {
   const maxConcurrent = positiveInteger("max-concurrent-operations", 4, 32);
   const uploadsPerMinute = positiveInteger("max-uploads-per-minute", 180, 199);
   const backendTimeoutSeconds = positiveInteger("backend-timeout-seconds", 300, 3600);
+  const storageMode = input("storage-mode", "objects").trim().toLowerCase();
+  if (!["objects", "packs"].includes(storageMode)) {
+    throw new Error("storage-mode must be objects or packs");
+  }
+  const packSizeMB = positiveInteger("pack-size-mb", 8, 32);
+  const packFlushSeconds = positiveInteger("pack-flush-seconds", 30, 3600);
+  const maxManifests = positiveInteger("max-manifests", 2048, 10_000);
+  const githubToken = input("github-token", "");
+  if (storageMode === "packs" && !githubToken) {
+    throw new Error("storage-mode=packs requires github-token with actions: read");
+  }
+  if (githubToken) mask(githubToken);
   const portText = input("port", "0");
   const port = Number.parseInt(portText, 10);
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) {
@@ -77,6 +89,14 @@ async function main() {
     spoolDir,
     "--key-prefix",
     input("key-prefix", "bazel-http-v1"),
+    "--storage-mode",
+    storageMode,
+    "--pack-size",
+    String(packSizeMB * 1024 * 1024),
+    "--pack-flush-interval",
+    `${packFlushSeconds}s`,
+    "--max-manifests",
+    String(maxManifests),
     booleanFlag("write-enabled", writeEnabled),
     booleanFlag("fail-open", failOpen),
     "--max-blob-size",
@@ -95,7 +115,11 @@ async function main() {
   const logDescriptor = fs.openSync(logFile, "a", 0o600);
   const child = spawn(binary, args, {
     detached: true,
-    env: { ...process.env, BAZEL_GHA_CACHE_SHUTDOWN_TOKEN: shutdownToken },
+    env: {
+      ...process.env,
+      BAZEL_GHA_CACHE_SHUTDOWN_TOKEN: shutdownToken,
+      GITHUB_TOKEN: githubToken || process.env.GITHUB_TOKEN || "",
+    },
     stdio: ["ignore", logDescriptor, logDescriptor],
   });
   fs.closeSync(logDescriptor);
@@ -125,6 +149,7 @@ async function main() {
   saveState("stats_file", statsFile);
   saveState("log_file", logFile);
   saveState("temp_dir", tempDir);
+  saveState("shutdown_wait_seconds", String(Math.max(60, backendTimeoutSeconds + 30)));
   setOutput("url", ready.url);
   setOutput("stats-url", ready.stats_url);
   setOutput("writable", String(writeEnabled));
@@ -134,7 +159,7 @@ async function main() {
   );
   setOutput("initial-stats", '{"requests":0,"hits":0,"misses":0,"uploads":0}');
   process.stdout.write(
-    `Bazel cache adapter ready at ${ready.url} (write=${writeEnabled}, fail_open=${failOpen}, pid=${ready.pid})${os.EOL}`,
+    `Bazel cache adapter ready at ${ready.url} (write=${writeEnabled}, mode=${storageMode}, fail_open=${failOpen}, pid=${ready.pid})${os.EOL}`,
   );
 }
 

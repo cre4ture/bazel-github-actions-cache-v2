@@ -20,28 +20,37 @@ type actionResultValidator struct {
 	validatedBlobs       map[string]int64
 	validatedTrees       map[string]int64
 	validatedDirectories map[string]int64
+	collectClosure       bool
+	closure              map[string]digestReference
 }
 
 func (s *Server) validateActionResult(ctx context.Context, object object) error {
-	return s.validateActionResultClosure(ctx, object, false)
+	_, err := s.validateActionResultClosure(ctx, object, false, false)
+	return err
 }
 
 func (s *Server) validateActionResultForPublication(ctx context.Context, object object) error {
-	return s.validateActionResultClosure(ctx, object, true)
+	_, err := s.validateActionResultClosure(ctx, object, true, false)
+	return err
+}
+
+func (s *Server) collectActionResultClosure(ctx context.Context, object object) ([]digestReference, error) {
+	return s.validateActionResultClosure(ctx, object, false, true)
 }
 
 func (s *Server) validateActionResultClosure(
 	ctx context.Context,
 	object object,
 	requirePersisted bool,
-) error {
+	collect bool,
+) ([]digestReference, error) {
 	data, err := os.ReadFile(object.path)
 	if err != nil {
-		return fmt.Errorf("read action result: %w", err)
+		return nil, fmt.Errorf("read action result: %w", err)
 	}
 	references, err := parseActionResult(data)
 	if err != nil {
-		return fmt.Errorf("%w: %v", errInvalidActionResult, err)
+		return nil, fmt.Errorf("%w: %v", errInvalidActionResult, err)
 	}
 	validator := &actionResultValidator{
 		server:               s,
@@ -50,18 +59,27 @@ func (s *Server) validateActionResultClosure(
 		validatedBlobs:       make(map[string]int64),
 		validatedTrees:       make(map[string]int64),
 		validatedDirectories: make(map[string]int64),
+		collectClosure:       collect,
+		closure:              make(map[string]digestReference),
 	}
 	for _, reference := range references.blobs.values {
 		if err := validator.validateBlob(reference); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	for _, reference := range references.trees.values {
 		if err := validator.validateTree(reference); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return validator.validateDirectoryClosure(references.directories.values)
+	if err := validator.validateDirectoryClosure(references.directories.values); err != nil {
+		return nil, err
+	}
+	closure := make([]digestReference, 0, len(validator.closure))
+	for _, reference := range validator.closure {
+		closure = append(closure, reference)
+	}
+	return sortDigestReferences(closure), nil
 }
 
 func (v *actionResultValidator) validateBlob(reference digestReference) error {
@@ -76,6 +94,7 @@ func (v *actionResultValidator) validateBlob(reference digestReference) error {
 	if err := v.reserveObject(); err != nil {
 		return err
 	}
+	v.collect(reference)
 	key := v.server.cfg.KeyPrefix + "-cas-" + reference.hash
 	found, err := v.casExists(key)
 	if err != nil {
@@ -93,6 +112,7 @@ func (v *actionResultValidator) validateTree(reference digestReference) error {
 	} else if alreadyValidated {
 		return nil
 	}
+	v.collect(reference)
 	object, err := v.loadCAS(reference)
 	if err != nil {
 		return err
@@ -123,6 +143,7 @@ func (v *actionResultValidator) validateDirectoryClosure(roots []digestReference
 		} else if alreadyValidated {
 			continue
 		}
+		v.collect(reference)
 		object, err := v.loadCAS(reference)
 		if err != nil {
 			return err
@@ -143,6 +164,12 @@ func (v *actionResultValidator) validateDirectoryClosure(roots []digestReference
 		queue = append(queue, directory.directories...)
 	}
 	return nil
+}
+
+func (v *actionResultValidator) collect(reference digestReference) {
+	if v.collectClosure && !isImplicitEmptyDigest(reference) {
+		v.closure[reference.hash] = reference
+	}
 }
 
 func (v *actionResultValidator) loadCAS(reference digestReference) (object, error) {

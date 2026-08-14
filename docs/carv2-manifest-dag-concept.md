@@ -1,7 +1,7 @@
 # Concept: CARv2 packs and a manifest DAG
 
-Status: proposed for a future v0.3 release. This document does not change the
-v0.2 object-per-entry format or its wire compatibility.
+Status: implemented in v0.3 as the opt-in `storage-mode: packs` format. It does
+not change the v0.2 object-per-entry format or its wire compatibility.
 
 ## Problem
 
@@ -66,8 +66,7 @@ A manifest is a small immutable DAG-CBOR block encoded with
 `go-ipld-prime`. Its CID is the manifest identifier and its Actions-cache key
 is derived from that CID.
 
-The final generated schema is a design-time decision, but its logical contents
-are:
+The implemented DAG-CBOR schema has this logical content:
 
 ```text
 Manifest {
@@ -168,8 +167,10 @@ Required tests include:
 - An end-to-end cold seed followed by a fresh-runner warm restore, measuring
   cache-entry creations, transfer volume, and hit rate.
 
-Before implementation, validate the chosen manifest schema and pack-size targets
-with a prototype against a representative large Bazel build.
+The initial implementation uses an 8 MiB target and a 32 MiB normal-pack limit;
+an individual oversized CAS output receives its own pack. It is released
+opt-in so representative cold-seed and warm-read runs can tune those defaults
+without altering the v0.2 rollback path.
 
 [go-car]: https://github.com/ipld/go-car
 [go-ipld]: https://github.com/ipld/go-ipld-prime
