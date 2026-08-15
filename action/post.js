@@ -21,6 +21,7 @@ async function post() {
   const statsFile = process.env.STATE_stats_file;
   const logFile = process.env.STATE_log_file;
   const tempDir = process.env.STATE_temp_dir;
+  const shutdownWaitSeconds = Number.parseInt(process.env.STATE_shutdown_wait_seconds || "330", 10);
   if (!url || !token || !Number.isSafeInteger(pid)) {
     process.stdout.write("Cache server state is absent; no cleanup is needed.\n");
     return;
@@ -39,7 +40,10 @@ async function post() {
     process.stderr.write(`::warning::cache shutdown request failed: ${error.message}\n`);
   }
 
-  for (let attempt = 0; attempt < 100 && processExists(pid); attempt += 1) {
+  const shutdownAttempts = Number.isSafeInteger(shutdownWaitSeconds) && shutdownWaitSeconds > 0
+    ? shutdownWaitSeconds * 10
+    : 3300;
+  for (let attempt = 0; attempt < shutdownAttempts && processExists(pid); attempt += 1) {
     await sleep(100);
   }
   if (processExists(pid)) {
@@ -67,6 +71,11 @@ async function post() {
       `| Hits | ${stats.hits ?? 0} |`,
       `| Misses | ${stats.misses ?? 0} |`,
       `| Published uploads | ${stats.uploads ?? 0} |`,
+      `| CARv2 pack uploads | ${stats.pack_uploads ?? 0} |`,
+      `| Manifest uploads | ${stats.manifest_uploads ?? 0} |`,
+      `| CARv2 pack downloads | ${stats.pack_downloads ?? 0} |`,
+      `| Manifests discovered | ${stats.manifests_discovered ?? 0} |`,
+      `| Action-digest conflicts | ${stats.action_digest_conflicts ?? 0} |`,
       `| Read-only discarded uploads | ${stats.discarded_uploads ?? 0} |`,
       `| Backend downloads | ${stats.backend_downloads ?? 0} |`,
       `| Backend existence checks | ${stats.backend_existence_checks ?? 0} |`,

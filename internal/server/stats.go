@@ -25,6 +25,13 @@ type Stats struct {
 	BytesServed                uint64 `json:"bytes_served"`
 	BytesReceived              uint64 `json:"bytes_received"`
 	ThrottleWaits              uint64 `json:"throttle_waits"`
+	PackUploads                uint64 `json:"pack_uploads"`
+	ManifestUploads            uint64 `json:"manifest_uploads"`
+	PackDownloads              uint64 `json:"pack_downloads"`
+	ManifestsDiscovered        uint64 `json:"manifests_discovered"`
+	ManifestDiscoveryErrors    uint64 `json:"manifest_discovery_errors"`
+	ManifestLoadErrors         uint64 `json:"manifest_load_errors"`
+	ActionDigestConflicts      uint64 `json:"action_digest_conflicts"`
 }
 
 type counters struct {
@@ -46,6 +53,13 @@ type counters struct {
 	bytesServed                atomic.Uint64
 	bytesReceived              atomic.Uint64
 	throttleWaits              atomic.Uint64
+	packUploads                atomic.Uint64
+	manifestUploads            atomic.Uint64
+	packDownloads              atomic.Uint64
+	manifestsDiscovered        atomic.Uint64
+	manifestDiscoveryErrors    atomic.Uint64
+	manifestLoadErrors         atomic.Uint64
+	actionDigestConflicts      atomic.Uint64
 }
 
 func (c *counters) snapshot() Stats {
@@ -68,6 +82,13 @@ func (c *counters) snapshot() Stats {
 		BytesServed:                c.bytesServed.Load(),
 		BytesReceived:              c.bytesReceived.Load(),
 		ThrottleWaits:              c.throttleWaits.Load(),
+		PackUploads:                c.packUploads.Load(),
+		ManifestUploads:            c.manifestUploads.Load(),
+		PackDownloads:              c.packDownloads.Load(),
+		ManifestsDiscovered:        c.manifestsDiscovered.Load(),
+		ManifestDiscoveryErrors:    c.manifestDiscoveryErrors.Load(),
+		ManifestLoadErrors:         c.manifestLoadErrors.Load(),
+		ActionDigestConflicts:      c.actionDigestConflicts.Load(),
 	}
 }
 

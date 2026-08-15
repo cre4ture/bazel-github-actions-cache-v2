@@ -30,18 +30,23 @@ var (
 )
 
 type Config struct {
-	Backend          cache.Backend
-	CacheDir         string
-	KeyPrefix        string
-	WriteEnabled     bool
-	FailOpen         bool
-	MaxBlobSize      int64
-	MaxConcurrent    int
-	UploadsPerMinute int
-	BackendTimeout   time.Duration
-	ShutdownToken    string
-	Shutdown         func()
-	Logger           *log.Logger
+	Backend           cache.Backend
+	Catalog           cache.Catalog
+	CacheDir          string
+	KeyPrefix         string
+	StorageMode       string
+	PackSize          int64
+	PackFlushInterval time.Duration
+	MaxManifests      int
+	WriteEnabled      bool
+	FailOpen          bool
+	MaxBlobSize       int64
+	MaxConcurrent     int
+	UploadsPerMinute  int
+	BackendTimeout    time.Duration
+	ShutdownToken     string
+	Shutdown          func()
+	Logger            *log.Logger
 }
 
 type object struct {
@@ -64,6 +69,7 @@ type Server struct {
 	publishing     map[string]*publication
 	sem            chan struct{}
 	limiter        *intervalLimiter
+	packs          *packStore
 }
 
 func New(cfg Config) (*Server, error) {
@@ -88,20 +94,48 @@ func New(cfg Config) (*Server, error) {
 	if cfg.BackendTimeout <= 0 {
 		return nil, errors.New("backend timeout must be positive")
 	}
+	if cfg.StorageMode == "" {
+		cfg.StorageMode = "objects"
+	}
+	if cfg.StorageMode != "objects" && cfg.StorageMode != "packs" {
+		return nil, errors.New("storage mode must be objects or packs")
+	}
+	if cfg.StorageMode == "packs" {
+		if cfg.Catalog == nil {
+			return nil, errors.New("packed storage mode requires a manifest catalog")
+		}
+		if cfg.PackSize <= 0 || cfg.PackSize > 32*1024*1024 {
+			return nil, errors.New("pack size must be between 1 byte and 32 MiB")
+		}
+		if cfg.PackFlushInterval <= 0 {
+			return nil, errors.New("pack flush interval must be positive")
+		}
+		if cfg.MaxManifests <= 0 {
+			return nil, errors.New("maximum manifests must be positive")
+		}
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = log.New(io.Discard, "", 0)
 	}
 	if err := os.MkdirAll(cfg.CacheDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create cache directory: %w", err)
 	}
-	return &Server{
+	server := &Server{
 		cfg:        cfg,
 		objects:    make(map[string]object),
 		published:  make(map[string]struct{}),
 		publishing: make(map[string]*publication),
 		sem:        make(chan struct{}, cfg.MaxConcurrent),
 		limiter:    newIntervalLimiter(cfg.UploadsPerMinute),
-	}, nil
+	}
+	if cfg.StorageMode == "packs" {
+		packs, err := newPackStore(server)
+		if err != nil {
+			return nil, err
+		}
+		server.packs = packs
+	}
+	return server, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -110,6 +144,14 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) Snapshot() Stats {
 	return s.stats.snapshot()
+}
+
+// Close commits every pending CARv2 batch before the action process exits.
+func (s *Server) Close(ctx context.Context) error {
+	if s.packs == nil {
+		return nil
+	}
+	return s.packs.close(ctx)
 }
 
 func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -290,6 +332,9 @@ func (s *Server) resolve(ctx context.Context, key, kind, digest string) (object,
 	if ok {
 		return obj, true, nil
 	}
+	if s.packs != nil {
+		return s.packs.resolve(ctx, key, kind, digest)
+	}
 
 	if err := s.acquire(ctx); err != nil {
 		return object{}, false, err
@@ -363,6 +408,13 @@ func (s *Server) exists(ctx context.Context, key string) (bool, error) {
 	if ok {
 		return true, nil
 	}
+	if s.packs != nil {
+		prefix := s.cfg.KeyPrefix + "-cas-"
+		if !strings.HasPrefix(key, prefix) || len(key) != len(prefix)+64 {
+			return false, errors.New("packed storage can only resolve CAS keys")
+		}
+		return s.packs.exists(ctx, key[len(prefix):])
+	}
 	return s.backendExists(ctx, key)
 }
 
@@ -434,14 +486,34 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request, key, kind, di
 	}
 
 	s.objectsMu.Lock()
-	if _, exists := s.objects[key]; !exists {
-		s.objects[key] = object{path: path, size: n}
+	stored, exists := s.objects[key]
+	if !exists {
+		stored = object{path: path, size: n}
+		s.objects[key] = stored
 		keep = true
 	}
 	s.objectsMu.Unlock()
 
 	if !s.cfg.WriteEnabled {
 		s.stats.discardedUploads.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if s.packs != nil {
+		if kind == "cas" {
+			s.packs.stageCAS(digest, stored)
+		} else {
+			closure, err := s.collectActionResultClosure(r.Context(), stored)
+			if err != nil {
+				s.handlePackedActionValidationError(w, digest, err)
+				return
+			}
+			if err := s.packs.stageAction(digest, stored, closure); err != nil {
+				s.handleSaveError(w, kind, digest, err)
+				return
+			}
+			s.stats.validatedActionResults.Add(1)
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -484,6 +556,30 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request, key, kind, di
 		s.stats.uploads.Add(1)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handlePackedActionValidationError(w http.ResponseWriter, digest string, err error) {
+	switch {
+	case errors.Is(err, errIncompleteActionResult):
+		s.stats.incompleteActionResults.Add(1)
+		s.stats.skippedActionResultUploads.Add(1)
+		s.cfg.Logger.Printf("not staging incomplete action result ac/%s: %s", digest, safeError(err))
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, errInvalidActionResult):
+		s.stats.invalidActionResults.Add(1)
+		s.stats.skippedActionResultUploads.Add(1)
+		s.cfg.Logger.Printf("not staging invalid action result ac/%s: %s", digest, safeError(err))
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		s.stats.backendLoadErrors.Add(1)
+		s.cfg.Logger.Printf("packed action result ac/%s validation failed: %s", digest, safeError(err))
+		if s.cfg.FailOpen {
+			s.stats.skippedActionResultUploads.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+		} else {
+			http.Error(w, "cache backend unavailable", http.StatusBadGateway)
+		}
+	}
 }
 
 // publishOnce coalesces identical immutable keys for the lifetime of the
