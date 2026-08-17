@@ -19,6 +19,13 @@ const {
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+function startupTimeoutMilliseconds(storageMode, backendTimeoutSeconds) {
+  // Packed mode restores every discoverable manifest before accepting Bazel
+  // requests. Its server-side discovery already has this deadline, so the
+  // wrapper must not report a false startup failure after a fixed 15 seconds.
+  return (storageMode === "packs" ? backendTimeoutSeconds : 15) * 1000;
+}
+
 function positiveInteger(name, fallback, maximum = Number.MAX_SAFE_INTEGER) {
   const value = Number.parseInt(input(name, String(fallback)), 10);
   if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
@@ -125,8 +132,9 @@ async function main() {
   fs.closeSync(logDescriptor);
   child.unref();
 
+  const readyDeadline = Date.now() + startupTimeoutMilliseconds(storageMode, backendTimeoutSeconds);
   let ready;
-  for (let attempt = 0; attempt < 150; attempt += 1) {
+  while (Date.now() < readyDeadline) {
     if (fs.existsSync(readyFile)) {
       ready = JSON.parse(fs.readFileSync(readyFile, "utf8"));
       break;
@@ -163,7 +171,11 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  process.stderr.write(`::error::${String(error.message).replaceAll("\r", "").replaceAll("\n", "%0A")}\n`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`::error::${String(error.message).replaceAll("\r", "").replaceAll("\n", "%0A")}\n`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { startupTimeoutMilliseconds };
