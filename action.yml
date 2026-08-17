@@ -50,7 +50,7 @@ inputs:
     required: false
     default: "180"
   backend-timeout-seconds:
-    description: "Timeout for one GitHub cache load or save"
+    description: "Timeout for one GitHub cache operation and initial packed-manifest discovery"
     required: false
     default: "300"
   port:

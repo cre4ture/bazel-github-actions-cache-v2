@@ -136,7 +136,7 @@ Do not enable Bazel remote-cache compression with this release.
 | `max-blob-size-mb` | `512` | Maximum spooled upload/download size |
 | `max-concurrent-operations` | `4` | Backend-operation backpressure |
 | `max-uploads-per-minute` | `180` | Evenly spaced uploads; must be below 200 |
-| `backend-timeout-seconds` | `300` | Per-operation timeout |
+| `backend-timeout-seconds` | `300` | Timeout for one GitHub cache operation and initial packed-manifest discovery |
 | `port` | `0` | Loopback port; zero chooses a free dynamic port |
 
 The main step outputs `url`, `stats-url`, `writable`, `bazel-args`, and
@@ -246,7 +246,7 @@ go vet ./...
 go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 node --test action/*.test.js
-VERSION=v0.3.0 scripts/build-dist.sh
+VERSION=v0.3.1 scripts/build-dist.sh
 git diff --exit-code -- dist
 (cd dist && sha256sum --check SHA256SUMS)
 ```
