@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"sort"
@@ -34,10 +35,15 @@ func (c memoryCatalog) List(_ context.Context, prefix string, limit int) ([]stri
 var _ cache.Catalog = memoryCatalog{}
 
 func testPackedServer(t *testing.T, backend *memoryBackend) *Server {
+	return testPackedServerWithMaxBlob(t, backend, 1024)
+}
+
+func testPackedServerWithMaxBlob(t *testing.T, backend *memoryBackend, maxBlobSize int64) *Server {
 	t.Helper()
 	return testServer(t, backend, func(cfg *Config) {
 		cfg.StorageMode = "packs"
 		cfg.Catalog = memoryCatalog{backend: backend}
+		cfg.MaxBlobSize = maxBlobSize
 		cfg.PackSize = 1024
 		cfg.PackFlushInterval = time.Hour
 		cfg.MaxManifests = 100
@@ -83,6 +89,29 @@ func TestPackedStoreRoundTripCommitsPackBeforeManifest(t *testing.T) {
 	stats = restore.Snapshot()
 	if stats.PackDownloads != 1 || stats.Hits != 2 || stats.ValidatedActionResults != 1 {
 		t.Fatalf("unexpected restore stats: %+v", stats)
+	}
+}
+
+func TestPackedStoreRestoresCASLargerThanCARDefaultSectionLimit(t *testing.T) {
+	const payloadSize = (8 << 20) + 1
+	const maxBlobSize = payloadSize + 1024
+	backend := newMemoryBackend()
+	seed := testPackedServerWithMaxBlob(t, backend, maxBlobSize)
+	payload := bytes.Repeat([]byte{0xa5}, payloadSize)
+	digest := digest(payload)
+	if response := putCacheObject(seed, "/cas/"+digest, payload); response.Code != http.StatusNoContent {
+		t.Fatalf("CAS PUT = %d, body = %s", response.Code, response.Body.String())
+	}
+	closePackedServer(t, seed)
+
+	restore := testPackedServerWithMaxBlob(t, backend, maxBlobSize)
+	defer closePackedServer(t, restore)
+	response := readCacheObject(restore, "/cas/"+digest)
+	if response.Code != http.StatusOK {
+		t.Fatalf("CAS GET = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !bytes.Equal(response.Body.Bytes(), payload) {
+		t.Fatal("restored CAS payload differs from the published payload")
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/cre4ture/bazel-github-actions-cache-v2/internal/cache"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
+	carv2 "github.com/ipld/go-car/v2"
 	"github.com/ipld/go-car/v2/blockstore"
 )
 
@@ -221,7 +222,7 @@ func (p *packStore) resolve(ctx context.Context, key, kind, digest string) (obje
 	if err != nil {
 		return object{}, false, err
 	}
-	data, err := readCARBlock(ctx, path, contentCID)
+	data, err := readCARBlock(ctx, path, contentCID, p.server.cfg.MaxBlobSize)
 	if err != nil {
 		return object{}, false, err
 	}
@@ -725,8 +726,17 @@ func parseManifestKey(prefix, key string) (string, bool) {
 	return id, validCID(id)
 }
 
-func readCARBlock(ctx context.Context, path, contentCID string) ([]byte, error) {
-	store, err := blockstore.OpenReadOnly(path, blockstore.UseWholeCIDs(true))
+const rawCIDSectionOverheadBytes = 64
+
+func readCARBlock(ctx context.Context, path, contentCID string, maxBlobSize int64) ([]byte, error) {
+	// CAR sections include the block CID as well as the payload. Packs use
+	// CIDv1/raw/SHA-256 CIDs, so a small fixed allowance above the configured
+	// payload limit safely admits every block this cache is allowed to store.
+	store, err := blockstore.OpenReadOnly(
+		path,
+		blockstore.UseWholeCIDs(true),
+		carv2.MaxAllowedSectionSize(uint64(maxBlobSize+rawCIDSectionOverheadBytes)),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("open CARv2 pack: %w", err)
 	}
